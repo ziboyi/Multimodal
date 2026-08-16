@@ -1,0 +1,57 @@
+# Web 框架
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+
+# 认证与安全
+python-jose[cryptography]>=3.3.0
+bcrypt>=4.0.0
+cryptography>=43.0.0
+
+# 数据库
+sqlalchemy[asyncio]>=2.0.0
+asyncpg>=0.29.0
+alembic>=1.13.0
+
+# Redis / 缓存
+redis[hiredis]>=5.0.0
+
+# Celery 异步任务
+celery[redis]>=5.4.0
+
+# Elasticsearch
+elasticsearch[async]>=8.10.0,<9.0.0
+
+# MinIO
+minio>=7.2.0
+
+# 文档解析
+markitdown>=0.0.1
+marker-pdf>=0.2.0
+numpy>=2.0.0
+
+# HTTP 客户端
+httpx>=0.27.0
+aiohttp>=3.10.0
+
+# 数据验证与配置
+pydantic[email]>=2.9.0
+pydantic-settings>=2.5.0
+
+# 工具
+python-dotenv>=1.0.0
+tenacity>=9.0.0
+structlog>=24.0.0
+
+# 语言检测
+langdetect>=1.0.9
+
+# 嵌入模型（本地）
+sentence-transformers>=3.0.0
+torch>=2.0.0
+transformers>=4.40.0
+Pillow>=10.0.0
+
+# 测试
+pytest>=8.0.0
+pytest-asyncio>=0.24.0

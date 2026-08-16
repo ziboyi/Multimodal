@@ -1,0 +1,7 @@
+.env
+.agent
+.codex
+.vscode
+*.pyc
+
+frontend/node_modules
