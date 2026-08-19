@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
 from app.core.dependencies import get_current_user_id
-from app.schemas.search import SearchRequest, SearchResponse, SearchResultItem
+from app.schemas.search import SearchRequest, SearchResponse, SearchResultItem, ImageInfo
 from app.services.retriever import RetrieverService
 import time
 
@@ -14,7 +14,7 @@ async def search(
 ):
     """多模态混合检索"""
     start_time = time.time()
-    
+
     retriever = RetrieverService()
     try:
         results = await retriever.search(
@@ -24,9 +24,9 @@ async def search(
             top_k=req.top_k,
             search_mode=req.search_mode,
         )
-        
+
         elapsed_ms = (time.time() - start_time) * 1000
-        
+
         return SearchResponse(
             query=req.query,
             results=[
@@ -41,6 +41,9 @@ async def search(
                     score=r.score,
                     image_url=r.image_url or "",
                     highlight=r.highlight or "",
+                    images=[ImageInfo(**img) if isinstance(img, dict) else img for img in r.images],
+                    metadata=r.metadata,
+                    language=r.language,
                 )
                 for r in results
             ],

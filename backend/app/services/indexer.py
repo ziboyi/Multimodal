@@ -52,6 +52,14 @@ class IndexerService:
                     },
                     "image_url": {"type": "keyword"},
                     "image_caption": {"type": "text"},
+                    "images": {
+                        "type": "nested",
+                        "properties": {
+                            "url": {"type": "keyword"},
+                            "caption": {"type": "text"},
+                            "path": {"type": "keyword"}
+                        }
+                    },
                     "page_number": {"type": "integer"},
                     "section_heading": {"type": "text"},
                     "document_name": {"type": "keyword"},
@@ -68,16 +76,36 @@ class IndexerService:
                            document_name: str, document_path: str,
                            chunks: List[TextChunk],
                            embeddings: list[list[float]],
-                           dim: int) -> int:
-        """批量索引文本块"""
+                           dim: int,
+                           images: list[dict] = None) -> int:
+        """批量索引文本块，关联图片"""
         await self.create_index(kb_id, dim)
         index_name = self._get_index_name(kb_id)
 
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc).isoformat()
 
+        # 建立 chunk_index → images 映射
+        chunk_images_map = {}
+        if images:
+            for img in images:
+                chunk_idx = img.get("associated_chunk_index")
+                if chunk_idx is not None:
+                    if chunk_idx not in chunk_images_map:
+                        chunk_images_map[chunk_idx] = []
+                    chunk_images_map[chunk_idx].append({
+                        "url": img.get("url", ""),
+                        "path": img.get("path", ""),
+                        "caption": img.get("caption", ""),
+                    })
+
         operations = []
         for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+            # 获取该 chunk 关联的图片
+            chunk_imgs = chunk_images_map.get(i, [])
+            image_url = chunk_imgs[0]["url"] if chunk_imgs else ""
+            image_caption = chunk_imgs[0]["caption"] if chunk_imgs else ""
+
             operations.append({"index": {"_index": index_name}})
             operations.append({
                 "chunk_id": f"{doc_id}_{chunk.chunk_index}",
@@ -89,8 +117,9 @@ class IndexerService:
                 "content": chunk.content,
                 "language": chunk.metadata.get("language", "unknown"),
                 "dense_vector": embedding,
-                "image_url": chunk.metadata.get("image_url", ""),
-                "image_caption": chunk.metadata.get("image_caption", ""),
+                "image_url": image_url,
+                "image_caption": image_caption,
+                "images": chunk_imgs,
                 "page_number": chunk.page_number,
                 "section_heading": chunk.metadata.get("section_heading", ""),
                 "document_name": document_name,

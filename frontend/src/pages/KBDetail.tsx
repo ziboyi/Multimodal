@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Upload, FileText, Trash2, Loader2, File } from 'lucide-react'
@@ -20,16 +20,89 @@ interface Document {
   created_at: string
 }
 
+interface DocProgress {
+  doc_id: string
+  filename: string
+  status: string
+  progress: number
+  message: string
+}
+
+// 解析 JWT 获取 user_id
+function parseUserIdFromToken(token: string): string | null {
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1]))
+    return payload.sub || null
+  } catch {
+    return null
+  }
+}
+
 export default function KBDetail() {
   const { kbId } = useParams<{ kbId: string }>()
   const queryClient = useQueryClient()
   const [uploading, setUploading] = useState(false)
+  const [progressMap, setProgressMap] = useState<Record<string, DocProgress>>({})
+
+  // WebSocket 连接
+  useEffect(() => {
+    const token = localStorage.getItem('access_token')
+    if (!token || !kbId) return
+
+    const userId = parseUserIdFromToken(token)
+    if (!userId) return
+
+    const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/${userId}`
+    const ws = new WebSocket(wsUrl)
+
+    ws.onopen = () => {
+      // 心跳保持
+      const pingInterval = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) ws.send('ping')
+      }, 30000)
+      ws.addEventListener('close', () => clearInterval(pingInterval))
+    }
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        if (data.type === 'document_progress') {
+          setProgressMap((prev) => ({
+            ...prev,
+            [data.doc_id]: data,
+          }))
+          // 处理完成后刷新文档列表
+          if (data.status === 'completed' || data.status === 'failed') {
+            queryClient.invalidateQueries({ queryKey: ['documents', kbId] })
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    ws.onerror = () => {
+      // WebSocket 连接失败不影响功能，静默处理
+    }
+
+    return () => {
+      ws.close()
+    }
+  }, [kbId, queryClient])
 
   const { data, isLoading } = useQuery({
     queryKey: ['documents', kbId],
     queryFn: async () => {
       const res = await apiClient.get(`/kb/${kbId}/documents`)
       return res.data as { total: number; items: Document[] }
+    },
+    refetchInterval: (query) => {
+      // 如果有正在处理中的文档，每2秒自动刷新
+      const items = query.state.data?.items || []
+      const hasProcessing = items.some((d) =>
+        ['pending', 'parsing', 'chunking', 'indexing'].includes(d.status)
+      )
+      return hasProcessing ? 2000 : false
     },
   })
 
@@ -87,6 +160,15 @@ export default function KBDetail() {
 
   const documents = data?.items || []
 
+  // 获取文档的实时进度
+  const getDocProgress = (docId: string, status: string) => {
+    const progress = progressMap[docId]
+    if (progress && ['parsing', 'chunking', 'indexing'].includes(progress.status)) {
+      return progress
+    }
+    return null
+  }
+
   return (
     <div className="p-8">
       {/* 头部 */}
@@ -122,7 +204,7 @@ export default function KBDetail() {
             {uploading && (
               <div className="mt-3 flex items-center justify-center gap-2 text-blue-600">
                 <Loader2 size={16} className="animate-spin" />
-                <span>上传处理中...</span>
+                <span>上传中...</span>
               </div>
             )}
           </div>
@@ -154,6 +236,7 @@ export default function KBDetail() {
           <div className="space-y-2">
             {documents.map((doc) => {
               const status = statusConfig[doc.status] || { label: doc.status, variant: 'secondary' }
+              const progress = getDocProgress(doc.id, doc.status)
               return (
                 <Card key={doc.id}>
                   <CardContent className="p-4 flex items-center gap-4">
@@ -172,6 +255,22 @@ export default function KBDetail() {
                       </div>
                       {doc.error_message && (
                         <p className="text-xs text-red-500 mt-1">{doc.error_message}</p>
+                      )}
+                      {/* 实时进度条 */}
+                      {progress && (
+                        <div className="mt-2">
+                          <div className="flex items-center gap-2 text-xs text-blue-600 mb-1">
+                            <Loader2 size={12} className="animate-spin" />
+                            <span>{progress.message}</span>
+                            <span className="ml-auto">{progress.progress}%</span>
+                          </div>
+                          <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-blue-500 rounded-full transition-all duration-300"
+                              style={{ width: `${progress.progress}%` }}
+                            />
+                          </div>
+                        </div>
                       )}
                     </div>
                     <Badge variant={status.variant as any}>{status.label}</Badge>

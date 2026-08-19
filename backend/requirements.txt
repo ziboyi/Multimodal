@@ -26,8 +26,8 @@ elasticsearch[async]>=8.10.0,<9.0.0
 minio>=7.2.0
 
 # 文档解析
-markitdown>=0.0.1
-marker-pdf>=0.2.0
+marker-pdf>=2.0.0      # PDF → Markdown (本地 OCR)
+markitdown>=0.0.1      # Office (docx/pptx/xlsx) → Markdown
 numpy>=2.0.0
 
 # HTTP 客户端

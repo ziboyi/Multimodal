@@ -5,3 +5,5 @@
 *.pyc
 
 frontend/node_modules
+eval/data
+eval/*.json

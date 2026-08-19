@@ -1,11 +1,19 @@
+import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
 from typing import Optional
 
+# .env 文件绝对路径（项目根目录）
+# config.py 在 app/core/，需要向上 4 层到达项目根目录
+_ENV_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+    ".env"
+)
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_ENV_PATH,
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore",
@@ -23,7 +31,7 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
     # ===== 加密 =====
-    API_ENCRYPTION_KEY: str = ""  # Fernet key for API key encryption
+    API_ENCRYPTION_KEY: str = ""
 
     # ===== 数据库 =====
     POSTGRES_USER: str = "multimodal"
@@ -71,8 +79,8 @@ class Settings(BaseSettings):
     # ===== 默认模型配置 =====
     DEFAULT_LLM_PROVIDER: str = "longcat"
     DEFAULT_LLM_MODEL: str = "LongCat-Flash-Chat"
-    DEFAULT_EMBED_PROVIDER: str = "bge-m3"
-    DEFAULT_EMBED_MODEL: str = "BAAI/BGE-M3"
+    DEFAULT_EMBED_PROVIDER: str = "siliconflow"
+    DEFAULT_EMBED_MODEL: str = "BAAI/bge-m3"
     DEFAULT_VISION_EMBED_PROVIDER: str = "clip"
     DEFAULT_VISION_EMBED_MODEL: str = "openai/clip-vit-base-32"
     DEFAULT_VISION_LLM_PROVIDER: str = "longcat"
@@ -85,12 +93,15 @@ class Settings(BaseSettings):
     LONGCAT_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
+    SILICONFLOW_API_KEY: str = ""
+
+    # ===== SiliconFlow 配置 =====
+    SILICONFLOW_API_BASE: str = "https://api.siliconflow.cn/v1"
 
     # ===== LongCat 配置 =====
     LONGCAT_API_BASE: str = "https://api.longcat.chat/openai"
 
     def get_api_key(self, provider: str) -> str:
-        """根据提供商名称获取 API Key"""
         key_map = {
             "openai": self.OPENAI_API_KEY,
             "qwen": self.DASHSCOPE_API_KEY,
@@ -98,13 +109,14 @@ class Settings(BaseSettings):
             "longcat": self.LONGCAT_API_KEY,
             "anthropic": self.ANTHROPIC_API_KEY,
             "gemini": self.GEMINI_API_KEY,
+            "siliconflow": self.SILICONFLOW_API_KEY,
         }
         return key_map.get(provider, "")
 
     def get_api_base(self, provider: str) -> str | None:
-        """根据提供商名称获取 API Base URL"""
         base_map = {
             "longcat": self.LONGCAT_API_BASE,
+            "siliconflow": self.SILICONFLOW_API_BASE,
         }
         return base_map.get(provider)
 

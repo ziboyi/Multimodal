@@ -116,7 +116,9 @@ services:
     environment:
       POSTGRES_HOST: postgres
       REDIS_HOST: redis
+      REDIS_URL: redis://redis:6379/0
       ELASTICSEARCH_HOST: elasticsearch
+      ELASTICSEARCH_URL: http://elasticsearch:9200
       MINIO_HOST: minio
     depends_on:
       postgres:
@@ -149,7 +151,9 @@ services:
     environment:
       POSTGRES_HOST: postgres
       REDIS_HOST: redis
+      REDIS_URL: redis://redis:6379/0
       ELASTICSEARCH_HOST: elasticsearch
+      ELASTICSEARCH_URL: http://elasticsearch:9200
       MINIO_HOST: minio
     depends_on:
       postgres:
@@ -182,8 +186,8 @@ services:
       - "80:80"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-    depends_on:
-      - frontend
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - multimodal
 

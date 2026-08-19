@@ -12,7 +12,9 @@ class SearchResult:
     def __init__(self, chunk_id: str, doc_id: str, kb_id: str,
                  document_name: str, content: str, chunk_type: str,
                  page_number: int | None, score: float,
-                 image_url: str = "", highlight: str = ""):
+                 image_url: str = "", highlight: str = "",
+                 images: list = None, metadata: dict = None,
+                 language: str = ""):
         self.chunk_id = chunk_id
         self.doc_id = doc_id
         self.kb_id = kb_id
@@ -23,6 +25,9 @@ class SearchResult:
         self.score = score
         self.image_url = image_url
         self.highlight = highlight
+        self.images = images or []
+        self.metadata = metadata or {}
+        self.language = language
 
 
 class RetrieverService:
@@ -35,7 +40,6 @@ class RetrieverService:
         )
 
     def _get_index_name(self, kb_id: str) -> str:
-        """索引名格式与 indexer.py 保持一致"""
         return f"kb_{kb_id.replace('-', '_')}"
 
     async def search(self, user_id: str, query: str,
@@ -43,27 +47,33 @@ class RetrieverService:
                      top_k: int = 10,
                      search_mode: str = "hybrid") -> List[SearchResult]:
         """混合检索入口"""
-        # 确定搜索的索引
         if kb_ids:
             indices = ",".join(self._get_index_name(kid) for kid in kb_ids)
         else:
             indices = "kb_*"
 
+        api_key = settings.get_api_key(settings.DEFAULT_EMBED_PROVIDER)
+        api_base = settings.get_api_base(settings.DEFAULT_EMBED_PROVIDER)
+        embed_provider = model_registry.get_text_embed(
+            provider=settings.DEFAULT_EMBED_PROVIDER,
+            model=settings.DEFAULT_EMBED_MODEL,
+            api_key=api_key,
+            api_base=api_base,
+        )
+
         if search_mode == "semantic":
-            return await self._semantic_search(indices, query, user_id, top_k)
+            return await self._semantic_search(indices, query, user_id, top_k, embed_provider)
         elif search_mode == "keyword":
             return await self._bm25_search(indices, query, user_id, top_k)
         else:
-            return await self._hybrid_search(indices, query, user_id, top_k)
+            return await self._hybrid_search(indices, query, user_id, top_k, embed_provider)
+
+    async def _get_query_vector(self, query: str, embed_provider) -> list[float]:
+        return (await embed_provider.embed([query]))[0]
 
     async def _semantic_search(self, indices: str, query: str,
-                               user_id: str, top_k: int) -> List[SearchResult]:
-        """纯向量检索"""
-        embed_provider = model_registry.get_text_embed(
-            settings.DEFAULT_EMBED_PROVIDER, settings.DEFAULT_EMBED_MODEL
-        )
-        query_vec = (await embed_provider.embed([query]))[0]
-
+                               user_id: str, top_k: int, embed_provider) -> List[SearchResult]:
+        query_vec = await self._get_query_vector(query, embed_provider)
         body = {
             "query": {"term": {"user_id": user_id}},
             "knn": {
@@ -74,18 +84,24 @@ class RetrieverService:
             },
             "size": top_k,
         }
-
         response = await self.client.search(index=indices, body=body)
         return self._parse_results(response)
 
     async def _bm25_search(self, indices: str, query: str,
                            user_id: str, top_k: int) -> List[SearchResult]:
-        """纯关键词检索"""
         body = {
             "query": {
                 "bool": {
                     "must": [
-                        {"multi_match": {"query": query, "fields": ["content", "content.cn", "content.en"]}}
+                        {
+                            "bool": {
+                                "should": [
+                                    {"multi_match": {"query": query, "fields": ["content", "content.cn", "content.en"]}},
+                                    {"nested": {"path": "images", "query": {"match": {"images.caption": query}}}},
+                                ],
+                                "minimum_should_match": 1,
+                            }
+                        }
                     ],
                     "filter": [{"term": {"user_id": user_id}}],
                 }
@@ -93,19 +109,13 @@ class RetrieverService:
             "highlight": {"fields": {"content": {}}},
             "size": top_k,
         }
-
         response = await self.client.search(index=indices, body=body)
         return self._parse_results(response)
 
     async def _hybrid_search(self, indices: str, query: str,
-                             user_id: str, top_k: int) -> List[SearchResult]:
-        """混合检索：kNN + BM25 + 应用层 RRF 融合"""
-        embed_provider = model_registry.get_text_embed(
-            settings.DEFAULT_EMBED_PROVIDER, settings.DEFAULT_EMBED_MODEL
-        )
-        query_vec = (await embed_provider.embed([query]))[0]
+                             user_id: str, top_k: int, embed_provider) -> List[SearchResult]:
+        query_vec = await self._get_query_vector(query, embed_provider)
 
-        # 并行执行 kNN 和 BM25
         knn_body = {
             "query": {"term": {"user_id": user_id}},
             "knn": {
@@ -121,7 +131,15 @@ class RetrieverService:
             "query": {
                 "bool": {
                     "must": [
-                        {"multi_match": {"query": query, "fields": ["content", "content.cn", "content.en"]}}
+                        {
+                            "bool": {
+                                "should": [
+                                    {"multi_match": {"query": query, "fields": ["content", "content.cn", "content.en"]}},
+                                    {"nested": {"path": "images", "query": {"match": {"images.caption": query}}}},
+                                ],
+                                "minimum_should_match": 1,
+                            }
+                        }
                     ],
                     "filter": [{"term": {"user_id": user_id}}],
                 }
@@ -139,15 +157,14 @@ class RetrieverService:
         knn_results = self._parse_results(knn_resp)
         bm25_results = self._parse_results(bm25_resp)
 
-        # RRF 融合
         return self._rrf_fusion(knn_results, bm25_results, top_k)
 
     def _rrf_fusion(self, knn_results: List[SearchResult],
                     bm25_results: List[SearchResult], top_k: int,
                     k: int = 60) -> List[SearchResult]:
         """应用层 Reciprocal Rank Fusion"""
-        scores = {}  # chunk_id -> score
-        result_map = {}  # chunk_id -> SearchResult
+        scores = {}
+        result_map = {}
 
         for rank, r in enumerate(knn_results):
             scores[r.chunk_id] = scores.get(r.chunk_id, 0) + 1.0 / (k + rank + 1)
@@ -158,7 +175,6 @@ class RetrieverService:
             if r.chunk_id not in result_map:
                 result_map[r.chunk_id] = r
 
-        # 排序
         sorted_ids = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)[:top_k]
 
         results = []
@@ -177,6 +193,13 @@ class RetrieverService:
             highlight = ""
             if "highlight" in hit and "content" in hit["highlight"]:
                 highlight = " ... ".join(hit["highlight"]["content"])
+
+            # 解析图片信息
+            images = src.get("images", [])
+            image_url = src.get("image_url", "")
+            if not image_url and images:
+                image_url = images[0].get("url", "")
+
             results.append(SearchResult(
                 chunk_id=src.get("chunk_id", ""),
                 doc_id=src.get("doc_id", ""),
@@ -186,8 +209,11 @@ class RetrieverService:
                 chunk_type=src.get("chunk_type", "text"),
                 page_number=src.get("page_number"),
                 score=hit.get("_score", 0.0),
-                image_url=src.get("image_url", ""),
+                image_url=image_url,
                 highlight=highlight,
+                images=images,
+                metadata=src.get("metadata", {}),
+                language=src.get("language", ""),
             ))
         return results
 

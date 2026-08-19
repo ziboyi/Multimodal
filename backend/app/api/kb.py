@@ -107,7 +107,7 @@ async def delete_kb(
     user_id: str = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    """删除知识库"""
+    """删除知识库（级联删除文档/ES索引/MinIO文件）"""
     result = await db.execute(
         select(KnowledgeBase).where(
             KnowledgeBase.id == kb_id,
@@ -118,6 +118,58 @@ async def delete_kb(
     if not kb:
         raise HTTPException(status_code=404, detail="Knowledge base not found")
 
+    # 1. 删除所有文档的 MinIO 文件 + ES 索引
+    from app.services.indexer import IndexerService
+    from app.services.minio_client import MinioService
+    from app.models.document import Document
+
+    doc_result = await db.execute(
+        select(Document).where(Document.kb_id == kb_id)
+    )
+    documents = doc_result.scalars().all()
+
+    minio_svc = MinioService()
+    indexer = IndexerService()
+
+    for doc in documents:
+        # 删除 MinIO 原始文件
+        if doc.file_path:
+            try:
+                await minio_svc.delete_file(doc.file_path)
+            except Exception:
+                pass
+        # 删除 MinIO 图片目录
+        try:
+            objects = minio_svc.client.list_objects(
+                bucket_name=minio_svc.bucket,
+                prefix=f"{kb_id}/{doc.id}/images/",
+                recursive=True,
+            )
+            for obj in objects:
+                minio_svc.client.remove_object(
+                    bucket_name=minio_svc.bucket,
+                    object_name=obj.object_name,
+                )
+        except Exception:
+            pass
+        # 删除 ES 文档索引
+        try:
+            await indexer.delete_document(kb_id=kb_id, doc_id=doc.id)
+        except Exception:
+            pass
+
+    await indexer.close()
+
+    # 2. 删除整个 KB 的 ES 索引
+    try:
+        from app.services.indexer import IndexerService
+        idx = IndexerService()
+        await idx.delete_kb_index(kb_id=kb_id)
+        await idx.close()
+    except Exception:
+        pass
+
+    # 3. 删除 KB 记录（级联删除文档 DB 记录，因外键 ondelete=CASCADE）
     await db.delete(kb)
     await db.commit()
 

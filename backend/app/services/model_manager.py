@@ -19,7 +19,6 @@ class ModelRegistry:
     def get_llm(self, provider: str, model: str, api_key: str = "", api_base: str | None = None) -> LLMProvider:
         cache_key = f"llm:{provider}:{model}"
         if cache_key not in self._llm_cache:
-            # 自动从配置获取 key
             if not api_key:
                 api_key = settings.get_api_key(provider)
             if not api_base:
@@ -58,6 +57,13 @@ class ModelRegistry:
         elif provider == "openai":
             from app.models_lib.text_embed.openai_embed import OpenAIEmbed
             return OpenAIEmbed(model=model, api_key=api_key, api_base=api_base)
+        elif provider == "siliconflow":
+            from app.models_lib.text_embed.siliconflow_embed import SiliconFlowEmbed
+            return SiliconFlowEmbed(
+                model_name=model,
+                api_key=api_key,
+                api_base=api_base or "https://api.siliconflow.cn/v1",
+            )
         else:
             raise ValueError(f"Unsupported embed provider: {provider}")
 
@@ -93,7 +99,6 @@ class ModelRegistry:
             return QwenVL(model=model, api_key=api_key, api_base=api_base)
         elif provider == "longcat":
             from app.models_lib.llm.longcat_llm import LongCatLLM
-            # 复用 LLM 接口（LongCat 支持多模态）
             return LongCatLLM(model=model, api_key=api_key, api_base=api_base)
         else:
             raise ValueError(f"Unsupported vision LLM provider: {provider}")
