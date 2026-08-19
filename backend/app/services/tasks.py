@@ -9,7 +9,7 @@ from app.core.database import AsyncSessionLocal
 from app.core.progress_pubsub import publish_progress
 from app.models.document import Document, DocumentStatus
 from app.services.doc_parser import DocParserService
-from app.services.chunker import ChunkerService
+from app.services.chunker import ChunkerService, TextChunk
 from app.services.indexer import IndexerService
 from app.services.minio_client import MinioService
 from app.services.model_manager import model_registry
@@ -78,7 +78,7 @@ async def _process_document(doc_id: str):
                 )
                 doc.markdown_content = markdown_content
 
-                # 4. 分块
+                # 4. 分块 - 两次解析策略
                 doc.status = DocumentStatus.CHUNKING.value
                 await db.commit()
                 _notify(user_id, doc_id, filename, "chunking", 40, "正在分块...")
@@ -89,24 +89,54 @@ async def _process_document(doc_id: str):
                 )
                 kb = kb_result.scalar_one()
 
-                chunks = ChunkerService.chunk_markdown(
+                # 第一次：纯文本分块（按段落，不切散句子）
+                text_chunks = ChunkerService.chunk_by_paragraph(
                     markdown_content,
                     chunk_size=kb.chunk_size,
                     chunk_overlap=kb.chunk_overlap,
                 )
+                for chunk in text_chunks:
+                    chunk.chunk_type = "text"
 
-                # 检测语言
-                for chunk in chunks:
+                # 第二次：提取图片，每个图片+caption 独立成块
+                image_chunks = []
+                import re
+                img_pattern = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
+                for match in img_pattern.finditer(markdown_content):
+                    img_path = match.group(2)
+                    # 查找 caption（图片后的第一行非空文本）
+                    after = markdown_content[match.end():]
+                    caption = ""
+                    for line in after.split('\n'):
+                        line = line.strip()
+                        if line:
+                            caption = line
+                            break
+                    # 查找图片信息
+                    img_info = None
+                    for img in extracted_images:
+                        if img['path'] == img_path:
+                            img_info = img
+                            break
+                    image_chunks.append(TextChunk(
+                        content=caption or img_info.get('caption', '') if img_info else '',
+                        chunk_index=0,  # 稍后重新编号
+                        chunk_type="image",
+                        metadata={"image_info": img_info, "image_path": img_path}
+                    ))
+
+                # 合并：文本块 + 图片块，重新编号
+                all_chunks = text_chunks + image_chunks
+                for i, chunk in enumerate(all_chunks):
+                    chunk.chunk_index = i
                     chunk.metadata["language"] = ChunkerService.detect_language(chunk.content)
 
                 # 5. 为 chunk 分配页码
-                ChunkerService.assign_page_numbers(chunks, page_info, len(markdown_content))
+                ChunkerService.assign_page_numbers(all_chunks, page_info, len(markdown_content))
+                chunks = all_chunks
 
-                # 6. 图片- chunk 关联
-                associated_images = ChunkerService.associate_images_with_chunks(chunks, extracted_images)
-
-                # 上传图片到 MinIO
-                for idx, img in enumerate(associated_images):
+                # 6. 上传图片到 MinIO，建立图片 chunk 的关联
+                for idx, img in enumerate(extracted_images):
                     img_filename = f"image_{idx}.png"
                     img_object_name = f"{doc.kb_id}/{doc.id}/images/{img_filename}"
                     await minio_svc.upload_file(
@@ -120,7 +150,16 @@ async def _process_document(doc_id: str):
                         expires=timedelta(days=7),
                     )
                     img["path"] = img_object_name
-                    print(f"图片已上传: {img_object_name} → chunk {img.get('associated_chunk_index', '?')}")
+                    print(f"图片已上传: {img_object_name}")
+
+                # 为 image chunk 关联图片信息（移除 data bytes，已上传 MinIO）
+                for chunk in chunks:
+                    if chunk.chunk_type == "image" and chunk.metadata.get("image_info"):
+                        img_info = chunk.metadata["image_info"]
+                        chunk.metadata["image_url"] = img_info.get("url", "")
+                        chunk.metadata["image_path"] = img_info.get("path", "")
+                        # 移除 data 字段（bytes 无法序列化到 ES）
+                        chunk.metadata["image_info"].pop("data", None)
 
                 # 7. 索引中
                 doc.status = DocumentStatus.INDEXING.value
@@ -152,7 +191,6 @@ async def _process_document(doc_id: str):
                     chunks=chunks,
                     embeddings=embeddings,
                     dim=embed_provider.dim,
-                    images=associated_images,
                 )
                 await indexer.close()
 

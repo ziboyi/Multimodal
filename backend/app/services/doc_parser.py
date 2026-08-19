@@ -99,6 +99,21 @@ class DocParserService:
         # 补充检测矢量图（marker 无法提取的 Path+Text 组合图）
         vector_images = await DocParserService._detect_vector_figures(file_path)
         if vector_images:
+            # caption 去重：如果矢量图与已有图片 caption 相同，跳过
+            existing_captions = {
+                img["caption"].split(":")[0].strip().lower()
+                for img in extracted_images if img.get("caption")
+            }
+            deduped = []
+            for vimg in vector_images:
+                vcap = vimg.get("caption", "")
+                if vcap:
+                    vkey = vcap.split(":")[0].strip().lower()
+                    if vkey in existing_captions:
+                        print(f"[marker] 跳过重复矢量图: {vkey}")
+                        continue
+                deduped.append(vimg)
+            vector_images = deduped
             print(f"[marker] 检测到 {len(vector_images)} 张矢量图")
             extracted_images.extend(vector_images)
 
@@ -385,7 +400,7 @@ class DocParserService:
         """从 markdown 中查找图片的 caption（支持 marker 格式）"""
         import re
         # 标准格式: ![caption](path)
-        pattern = re.compile(r'!\[([^\\]]*)\]\(([^)]*' + re.escape(img_name) + r'[^)]*)\)')
+        pattern = re.compile(r'!\[([^\]]*)\]\(([^)]*' + re.escape(img_name) + r'[^)]*)\)')
         match = pattern.search(markdown)
         if match and match.group(1):
             return match.group(1)

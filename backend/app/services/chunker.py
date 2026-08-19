@@ -98,6 +98,83 @@ class ChunkerService:
         return chunks
 
     @staticmethod
+    def chunk_markdown_with_images(markdown: str, images: list, chunk_size: int = 1000, chunk_overlap: int = 200) -> List[TextChunk]:
+        """
+        Markdown 感知的分块：图片独立成块
+        - 文本按段落分块
+        - 每个图片+caption 独立成一个 chunk
+        """
+        chunks = []
+        
+        # 1. 提取所有图片引用及其 caption
+        # 格式: ![alt](path) 后跟 caption 文本
+        img_pattern = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
+        matches = list(img_pattern.finditer(markdown))
+        
+        if not matches:
+            return ChunkerService.chunk_markdown(markdown, chunk_size, chunk_overlap)
+        
+        # 2. 构建图片路径到图片信息的映射
+        img_map = {}
+        for img in images:
+            img_map[img['path']] = img
+        
+        # 3. 分割处理
+        last_end = 0
+        chunk_index = 0
+        
+        for i, match in enumerate(matches):
+            # 图片前的文本
+            text_before = markdown[last_end:match.start()].strip()
+            if text_before:
+                text_chunks = ChunkerService.chunk_markdown(text_before, chunk_size, chunk_overlap)
+                for tc in text_chunks:
+                    tc.chunk_index = chunk_index
+                    chunks.append(tc)
+                    chunk_index += 1
+            
+            # 图片信息
+            img_path = match.group(2)
+            img_info = img_map.get(img_path)
+            
+            # 图片后的文本（caption）
+            next_start = matches[i+1].start() if i+1 < len(matches) else len(markdown)
+            text_after = markdown[match.end():next_start].strip()
+            
+            # 提取 caption（第一行非空文本）
+            caption = ""
+            for line in text_after.split('\n'):
+                line = line.strip()
+                if line:
+                    caption = line
+                    break
+            
+            # 如果 caption 为空，使用图片的 caption
+            if not caption and img_info:
+                caption = img_info.get('caption', '')
+            
+            chunks.append(TextChunk(
+                content=caption,
+                chunk_index=chunk_index,
+                chunk_type="image",
+                metadata={"image_info": img_info, "image_path": img_path}
+            ))
+            chunk_index += 1
+            
+            last_end = next_start
+        
+        # 最后一段文本
+        text_after_last = markdown[last_end:].strip()
+        if text_after_last:
+            text_chunks = ChunkerService.chunk_markdown(text_after_last, chunk_size, chunk_overlap)
+            for tc in text_chunks:
+                tc.chunk_index = chunk_index
+                chunks.append(tc)
+                chunk_index += 1
+        
+        return chunks
+
+    @staticmethod
     def assign_page_numbers(chunks: List[TextChunk], page_info: dict, full_text_length: int) -> None:
         """根据页面信息为 chunk 分配页码"""
         page_lengths = page_info.get("page_lengths", {})
